@@ -2,22 +2,19 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 from PIL import Image
-from tensorflow.keras.models import load_model
-import tensorflow as tf
-tf.config.experimental_run_functions_eagerly(True)
-from tensorflow.keras.preprocessing import image
 import os
 import requests
+import base64
+from io import BytesIO
 
 
 st.set_page_config(page_title="Food Nutrition Analyzer", layout="centered")
+
 # -------------------------------
 # 🔐 LOGIN SYSTEM
 # -------------------------------
 def login_page():
     """Display login/signup page"""
-    st.set_page_config(page_title="Food Nutrition Analyzer - Login", layout="centered")
-    
     st.title("🍽️ Food Nutrition Analyzer")
     st.markdown("### Welcome! Please login to continue")
     
@@ -85,33 +82,51 @@ if not st.session_state["logged_in"]:
 # MAIN APPLICATION (Only shows after login)
 # -------------------------------
 
-# -------------------------------
-# ✅ Load Real Model + Labels
-# -------------------------------
-from tensorflow.keras.applications import EfficientNetB0
-from tensorflow.keras.applications.efficientnet import preprocess_input
+# Roboflow API Configuration
+ROBOFLOW_API_KEY = "miqjbOE79Xa7IqeGO0fg"
+ROBOFLOW_MODEL_ENDPOINT = "https://outline.roboflow.com/food-image-segmentation-yolov5-wm2it/1"
 
-MODEL_PATH = os.path.join("../models", "efficientnet-b0_weights_tf_dim_ordering_tf_kernels_autoaugment_notop.h5")
-LABELS_PATH = os.path.join("../resources", "labels.txt")
-TARGET_SIZE = (224, 224)
-
-try:
-    model = load_model(MODEL_PATH, compile=False)
-    st.sidebar.success("✅ Model loaded successfully from file.")
-except Exception as e:
-    st.sidebar.warning(f"⚠️ Could not load model from file ({e}). Using pretrained EfficientNetB0 instead.")
-    model = EfficientNetB0(weights="imagenet")
-    st.sidebar.info("📦 Using fallback pretrained EfficientNetB0 model (ImageNet).")
-    st.sidebar.success("✅ Model loaded successfully!")
-
-# Load class labels
-try:
-    with open(LABELS_PATH, "r", encoding="utf-8") as f:
-        class_names = [line.strip() for line in f if line.strip()]
-    st.sidebar.info(f"📘 Loaded {len(class_names)} labels.")
-except Exception as e:
-    st.sidebar.warning(f"⚠️ Could not load labels file: {e}")
-    class_names = []
+def classify_food_with_roboflow(image_file):
+    """
+    Send image to Roboflow API and get predictions
+    
+    Args:
+        image_file: PIL Image or file-like object
+        
+    Returns:
+        dict: Predictions from Roboflow API
+    """
+    try:
+        # Convert PIL Image to base64
+        if isinstance(image_file, Image.Image):
+            buffered = BytesIO()
+            image_file.save(buffered, format="JPEG")
+            img_bytes = buffered.getvalue()
+        else:
+            img_bytes = image_file.read()
+        
+        # Encode to base64
+        img_base64 = base64.b64encode(img_bytes).decode('utf-8')
+        
+        # Make API request
+        response = requests.post(
+            f"{ROBOFLOW_MODEL_ENDPOINT}?api_key={ROBOFLOW_API_KEY}",
+            data=img_base64,
+            headers={
+                "Content-Type": "application/x-www-form-urlencoded"
+            },
+            timeout=30
+        )
+        
+        if response.status_code == 200:
+            return response.json()
+        else:
+            st.error(f"Roboflow API Error {response.status_code}: {response.text}")
+            return None
+            
+    except Exception as e:
+        st.error(f"Error calling Roboflow API: {e}")
+        return None
 
 # -------------------------------
 # Load Nutrition Data
@@ -121,7 +136,6 @@ nutrition_df = pd.read_csv(os.path.join("../data", "nutrition_data.csv"))
 # -------------------------------
 # Streamlit UI
 # -------------------------------
-st.set_page_config(page_title="Food Nutrition Analyzer", layout="centered")
 
 # Add logout button in sidebar
 st.sidebar.markdown(f"### 👤 Logged in as: **{st.session_state['username']}**")
@@ -145,111 +159,59 @@ if search_query:
         st.warning("No matching food found.")
 
 # -------------------------------
-# 📷 Food Image Recognition
+# 📷 Food Image Recognition with Roboflow
 # -------------------------------
-if os.path.exists(os.path.join("../resources", "classes.txt")):
-    with open(os.path.join("../resources", "classes.txt"), "r", encoding="utf-8") as f:
-        class_names_used = [line.strip() for line in f if line.strip()]
-else:
-    class_names_used = class_names if 'class_names' in globals() else []
-
 st.subheader("📷 Food Image Recognition")
 uploaded_file = st.file_uploader("Upload a food image", type=["jpg", "jpeg", "png"])
 
-def preprocess_pil(img_pil, target_size=TARGET_SIZE):
-    if img_pil.mode != "RGB":
-        img_pil = img_pil.convert("RGB")
-    img_resized = img_pil.resize(target_size)
-    x = np.array(img_resized).astype("float32")
-    x = np.expand_dims(x, axis=0)
-    x = preprocess_input(x)
-    return x
-
 food_info = pd.DataFrame()
+predicted_food = None
 
 if uploaded_file:
     img = Image.open(uploaded_file)
     st.image(img, caption="Uploaded Image", use_container_width=True)
-
-    try:
-        img_model = load_model(MODEL_PATH, compile=False)
-        st.sidebar.info(f"✅ Image model loaded from {MODEL_PATH} for prediction.")
-    except Exception as e:
-        st.sidebar.warning(f"⚠️ Could not load image model from {MODEL_PATH}: {e}")
-        img_model = globals().get('model')
-        if img_model is None:
-            st.error("No model available for prediction.")
-
-    try:
-        x = preprocess_pil(img)
-        preds = img_model.predict(x, verbose=0) if img_model is not None else None
-    except Exception as e:
-        st.error(f"Model prediction failed: {e}")
-        preds = None
-
-    if preds is not None:
-        if preds.ndim == 1:
-            probs = tf.nn.softmax(preds).numpy()
-        else:
-            probs = tf.nn.softmax(preds[0]).numpy()
-
-        top_idx = probs.argsort()[-5:][::-1]
-        n_model = probs.size
-        n_labels = len(class_names_used)
-
-        top_preds = []
-        for i in top_idx:
-            if i < n_labels:
-                name = class_names_used[i]
-            else:
-                name = None
-            top_preds.append((i, name, probs[i]))
-
-        st.markdown("**Top predictions:**")
-        for i, name, p in top_preds:
-            if name:
-                display_name = name.replace("_", " ").title()
-            else:
-                display_name = f"Class #{i} (no matching label)"
-            st.write(f"- {display_name}: {p*100:.2f}%")
-
-        best_idx = top_idx[0]
-        confidence = probs[best_idx] * 100
-
-        if n_model == n_labels and n_labels > 0:
-            best_name = class_names_used[best_idx]
-            predicted_food = best_name.replace("_", " ").title()
+    
+    with st.spinner("🔍 Analyzing image with AI..."):
+        # Call Roboflow API
+        predictions = classify_food_with_roboflow(img)
+    
+    if predictions and 'predictions' in predictions:
+        st.markdown("**🎯 Detection Results:**")
+        
+        # Sort predictions by confidence
+        sorted_predictions = sorted(
+            predictions['predictions'], 
+            key=lambda x: x.get('confidence', 0), 
+            reverse=True
+        )
+        
+        # Display top predictions
+        for idx, pred in enumerate(sorted_predictions[:5]):
+            class_name = pred.get('class', 'Unknown')
+            confidence = pred.get('confidence', 0) * 100
+            st.write(f"{idx+1}. **{class_name}**: {confidence:.2f}% confidence")
+        
+        # Use the highest confidence prediction
+        if sorted_predictions:
+            best_prediction = sorted_predictions[0]
+            predicted_food = best_prediction.get('class', 'Unknown')
+            confidence = best_prediction.get('confidence', 0) * 100
+            
             st.success(f"🍴 Predicted Food: **{predicted_food}** ({confidence:.2f}% confidence)")
-        else:
-            st.warning(f"Model produced {n_model} scores but labels list has {n_labels} entries.\n"
-                       "This usually means the loaded model doesn't match the labels file (e.g. you loaded a 'notop' feature extractor or an ImageNet model).")
-
-            if best_idx < n_labels:
-                best_name = class_names_used[best_idx]
-                predicted_food = best_name.replace("_", " ").title()
-                st.success(f"🍴 Predicted Food: **{predicted_food}** ({confidence:.2f}% confidence)")
+            
+            # Try to match with nutrition database
+            try:
+                food_info = nutrition_df[nutrition_df['Food'].str.contains(predicted_food, case=False, na=False)]
+            except Exception:
+                food_info = pd.DataFrame()
+            
+            if not food_info.empty:
+                st.markdown("**📊 Nutrition Information:**")
+                st.dataframe(food_info.set_index('Food'))
             else:
-                guessed = None
-                if n_labels > 0:
-                    guessed = class_names_used[best_idx % n_labels]
-                    guessed_display = guessed.replace("_", " ").title()
-                    st.info(f"Best numeric class index: {best_idx} ({confidence:.2f}% confidence).\n"
-                            f"Closest label guess (index modulo labels length): {guessed_display} — this is only a heuristic.")
-                    predicted_food = guessed_display
-                else:
-                    st.info(f"Best numeric class index: {best_idx} ({confidence:.2f}% confidence). No labels available to map to names.")
-                    predicted_food = str(best_idx)
-
-        try:
-            food_info = nutrition_df[nutrition_df['Food'].str.contains(predicted_food, case=False, na=False)]
-        except Exception:
-            food_info = pd.DataFrame()
-
-        if not food_info.empty:
-            st.markdown("**Matched nutrition info:**")
-            st.dataframe(food_info.set_index('Food'))
-        else:
-            st.info("No exact nutrition match found for the predicted label.")
+                st.info(f"ℹ️ No nutrition data found for '{predicted_food}' in database.")
+    else:
+        st.warning("⚠️ Could not detect any food items in the image. Please try another image.")
 
 # -------------------------------
 # 📊 Daily Food Log with Quantity
@@ -257,25 +219,27 @@ if uploaded_file:
 if "food_log" not in st.session_state:
     st.session_state["food_log"] = []
 
-if uploaded_file and not food_info.empty:
-    qty = st.number_input(f"Enter quantity for {predicted_food} (grams or units):", min_value=1, step=1, key="img_qty")
+# Add from image prediction
+if uploaded_file and predicted_food and not food_info.empty:
+    qty = st.number_input(f"Enter quantity for {predicted_food} (grams):", min_value=1, step=1, key="img_qty")
     if st.button("Add to Daily Log (from Image)"):
         food_data = food_info.to_dict(orient="records")[0]
         factor = qty / 100
         scaled_data = {
             "Food": food_data["Food"],
+            "Quantity (g)": qty,
             "Calories": food_data["Calories"] * factor,
             "Protein (g)": food_data["Protein (g)"] * factor,
             "Carbs (g)": food_data["Carbs (g)"] * factor,
-            "Fats (g)": food_data["Fats (g)"] * factor,
-            "Quantity": f"{qty} g"
+            "Fats (g)": food_data["Fats (g)"] * factor
         }
         st.session_state["food_log"].append(scaled_data)
-        st.success(f"✅ Added {qty} g of {predicted_food} to your daily log!")
+        st.success(f"✅ Added {qty}g of {predicted_food} to your daily log!")
 
+# Add from search results
 if search_query and 'search_results' in locals() and not search_results.empty:
     selected_food = st.selectbox("Select a food from search results to log:", search_results["Food"].tolist())
-    qty = st.number_input(f"Enter quantity for {selected_food} (grams or units):", min_value=1, step=1, key="search_qty")
+    qty = st.number_input(f"Enter quantity for {selected_food} (grams):", min_value=1, step=1, key="search_qty")
 
     if st.button("Add to Daily Log (from Search)"):
         food_data = nutrition_df[nutrition_df["Food"] == selected_food].to_dict(orient="records")[0]
@@ -286,7 +250,7 @@ if search_query and 'search_results' in locals() and not search_results.empty:
 
         adjusted_data = {
             "Food": selected_food,
-            "Quantity (g/units)": qty,
+            "Quantity (g)": qty,
             "Calories": food_data["Calories"] * factor,
             "Protein (g)": food_data["Protein (g)"] * factor,
             "Carbs (g)": food_data["Carbs (g)"] * factor,
@@ -294,10 +258,10 @@ if search_query and 'search_results' in locals() and not search_results.empty:
         }
 
         st.session_state["food_log"].append(adjusted_data)
-        st.success(f"{selected_food} added to your daily log!")
+        st.success(f"✅ {selected_food} added to your daily log!")
 
 st.markdown("---")
-st.subheader("📊 Your Daily Nutrition Log (24 hrs)")
+st.subheader("📊 Your Daily Nutrition Log")
 
 if st.session_state["food_log"]:
     log_df = pd.DataFrame(st.session_state["food_log"])
@@ -309,11 +273,12 @@ if st.session_state["food_log"]:
     total_fat = log_df["Fats (g)"].sum()
 
     st.write(f"**Total Calories:** {total_cal:.1f} kcal")
-    st.write(f"**Protein:** {total_protein:.1f} g | **Carbs:** {total_carbs:.1f} g | **Fat:** {total_fat:.1f} g")
+    st.write(f"**Protein:** {total_protein:.1f}g | **Carbs:** {total_carbs:.1f}g | **Fat:** {total_fat:.1f}g")
 
     if st.button("🗑️ Clear Today's Log"):
         st.session_state["food_log"] = []
         st.success("Daily log cleared!")
+        st.rerun()
 else:
     st.info("No foods logged yet today. Add foods above!")
 
@@ -343,86 +308,86 @@ if st.button("Calculate BMI & Get Plan"):
 
         st.success(f"Your BMI is **{bmi_value:.2f}** → Category: **{category}**")
 
-    st.subheader("🥗 Suggested Diet Plan")
-    diet = []
-    if category == "Underweight":
-        diet = [
-            "Breakfast: Banana shake / oats porridge with nuts",
-            "Lunch: Rice, dal, 2 rotis, sabzi",
-            "Snack: Dry fruits or paneer sandwich",
-            "Dinner: Khichdi or chicken curry with rice"
-        ]
-    elif category in ["Overweight", "Obese"]:
-        diet = [
-            "Breakfast: Vegetable oats upma + green tea",
-            "Lunch: 2 rotis, dal, sabzi, salad",
-            "Snack: Fruit bowl (papaya, apple, guava)",
-            "Dinner: Grilled paneer/chicken with vegetables"
-        ]
-    else:
-        diet = [
-            "Breakfast: Poha / idli + chutney",
-            "Lunch: Balanced thali with roti, dal, sabzi",
-            "Snack: Sprouts or fruit salad",
-            "Dinner: Light khichdi or veg pulao"
-        ]
+        st.subheader("🥗 Suggested Diet Plan")
+        diet = []
+        if category == "Underweight":
+            diet = [
+                "Breakfast: Banana shake / oats porridge with nuts",
+                "Lunch: Rice, dal, 2 rotis, sabzi",
+                "Snack: Dry fruits or paneer sandwich",
+                "Dinner: Khichdi or chicken curry with rice"
+            ]
+        elif category in ["Overweight", "Obese"]:
+            diet = [
+                "Breakfast: Vegetable oats upma + green tea",
+                "Lunch: 2 rotis, dal, sabzi, salad",
+                "Snack: Fruit bowl (papaya, apple, guava)",
+                "Dinner: Grilled paneer/chicken with vegetables"
+            ]
+        else:
+            diet = [
+                "Breakfast: Poha / idli + chutney",
+                "Lunch: Balanced thali with roti, dal, sabzi",
+                "Snack: Sprouts or fruit salad",
+                "Dinner: Light khichdi or veg pulao"
+            ]
 
-    if condition == "diabetes":
-        diet.append("⚠️ Note: Avoid sugar, include high-fiber foods like oats & vegetables.")
-    elif condition == "hypertension":
-        diet.append("⚠️ Note: Reduce salt, eat more leafy greens and fruits.")
-    elif condition == "cholesterol":
-        diet.append("⚠️ Note: Avoid fried/oily foods, include flax seeds & omega-3 rich foods.")
+        if condition == "diabetes":
+            diet.append("⚠️ Note: Avoid sugar, include high-fiber foods like oats & vegetables.")
+        elif condition == "hypertension":
+            diet.append("⚠️ Note: Reduce salt, eat more leafy greens and fruits.")
+        elif condition == "cholesterol":
+            diet.append("⚠️ Note: Avoid fried/oily foods, include flax seeds & omega-3 rich foods.")
 
-    st.write("\n".join([f"- {d}" for d in diet]))
+        st.write("\n".join([f"- {d}" for d in diet]))
 
-    st.subheader("🏃 Suggested Exercise Plan with Videos")
+        st.subheader("🏃 Suggested Exercise Plan with Videos")
 
-    exercise_plan = {
-        "Underweight": [
-            {"name": "Light strength training (push-ups, squats)", "videos": ["https://www.youtube.com/watch?v=IODxDxX7oi4"]},
-            {"name": "Yoga or stretching exercises", "videos": ["https://youtu.be/AUsbthQ9W-I?si=j0ZIeC9ZdGbj5j1WE"]}
-        ],
-        "Normal": [
-            {"name": "Cardio 30 min x 3-4 days/week", "videos": ["https://youtu.be/FrhvZ5pXtr4?si=4gSDtWHNw1Am6oQY"]},
-            {"name": "Strength training 2-3 days/week", "videos": ["https://youtu.be/NsIn-z5bOWk?si=hYYOro7TuUfcUxn2"]},
-            {"name": "Yoga/meditation for flexibility", "videos": ["https://youtu.be/3rTdYCWrm8c?si=LIwYFIjXBjs9rWlC"]}
-        ],
-        "Overweight": [
-            {"name": "30 minutes brisk walking daily", "videos": ["https://www.youtube.com/watch?v=1minvideoexample"]},
-            {"name": "20 minutes fatloss home workout", "videos": ["https://youtu.be/FeR-4_Opt-g?si=lFuR5tsnGN_0Eqtr"]},
-            {"name": "Beginner yoga or stretching", "videos": ["https://www.youtube.com/watch?v=v7AYKMP6rOE"]}
-        ],
-        "Obese": [
-            {"name": "Start with 15-20 minutes walking", "videos": ["https://youtu.be/wQrV75N2BrI?si=v2Qb_-M3FTKGh5b3"]},
-            {"name": "Strength training 2-3 days/week", "videos": ["https://youtu.be/NsIn-z5bOWk?si=hYYOro7TuUfcUxn2"]},
-            {"name": "Avoid heavy lifting in the beginning", "videos": ["https://www.youtube.com/watch?v=IODxDxX7oi4"]}
-        ]
-    }
+        exercise_plan = {
+            "Underweight": [
+                {"name": "Light strength training (push-ups, squats)", "videos": ["https://www.youtube.com/watch?v=IODxDxX7oi4"]},
+                {"name": "Yoga or stretching exercises", "videos": ["https://youtu.be/AUsbthQ9W-I?si=j0ZIeC9ZdGbj5j1WE"]}
+            ],
+            "Normal": [
+                {"name": "Cardio 30 min x 3-4 days/week", "videos": ["https://youtu.be/FrhvZ5pXtr4?si=4gSDtWHNw1Am6oQY"]},
+                {"name": "Strength training 2-3 days/week", "videos": ["https://youtu.be/NsIn-z5bOWk?si=hYYOro7TuUfcUxn2"]},
+                {"name": "Yoga/meditation for flexibility", "videos": ["https://youtu.be/3rTdYCWrm8c?si=LIwYFIjXBjs9rWlC"]}
+            ],
+            "Overweight": [
+                {"name": "30 minutes brisk walking daily", "videos": ["https://www.youtube.com/watch?v=1minvideoexample"]},
+                {"name": "20 minutes fatloss home workout", "videos": ["https://youtu.be/FeR-4_Opt-g?si=lFuR5tsnGN_0Eqtr"]},
+                {"name": "Beginner yoga or stretching", "videos": ["https://www.youtube.com/watch?v=v7AYKMP6rOE"]}
+            ],
+            "Obese": [
+                {"name": "Start with 15-20 minutes walking", "videos": ["https://youtu.be/wQrV75N2BrI?si=v2Qb_-M3FTKGh5b3"]},
+                {"name": "Strength training 2-3 days/week", "videos": ["https://youtu.be/NsIn-z5bOWk?si=hYYOro7TuUfcUxn2"]},
+                {"name": "Avoid heavy lifting in the beginning", "videos": ["https://www.youtube.com/watch?v=IODxDxX7oi4"]}
+            ]
+        }
 
-    condition_exercises = {
-        "diabetes": [
-            {"name": "Gentle walking after meals", "videos": ["https://youtu.be/sxBmITOwQ54?si=cJpyYnAU-9E52xCz"]},
-            {"name": "Low-impact aerobic exercises", "videos": ["https://youtu.be/v8CDptlpeys?si=Guh0lbbtsZCFMbiS"]}
-        ],
-        "hypertension": [
-            {"name": "Moderate yoga for relaxation", "videos": ["https://www.youtube.com/watch?v=v7AYKMP6rOE"]},
-            {"name": "Brisk walking 20-30 mins", "videos": ["https://youtu.be/wQrV75N2BrI?si=v2Qb_-M3FTKGh5b3"]}
-        ],
-        "cholesterol": [
-            {"name": "20 minutes fatloss home workout", "videos": ["https://youtu.be/FeR-4_Opt-g?si=lFuR5tsnGN_0Eqtr"]},
-            {"name": "Strength training 2 days/week", "videos": ["https://youtu.be/NsIn-z5bOWk?si=hYYOro7TuUfcUxn2"]}
-        ]
-    }
+        condition_exercises = {
+            "diabetes": [
+                {"name": "Gentle walking after meals", "videos": ["https://youtu.be/sxBmITOwQ54?si=cJpyYnAU-9E52xCz"]},
+                {"name": "Low-impact aerobic exercises", "videos": ["https://youtu.be/v8CDptlpeys?si=Guh0lbbtsZCFMbiS"]}
+            ],
+            "hypertension": [
+                {"name": "Moderate yoga for relaxation", "videos": ["https://www.youtube.com/watch?v=v7AYKMP6rOE"]},
+                {"name": "Brisk walking 20-30 mins", "videos": ["https://youtu.be/wQrV75N2BrI?si=v2Qb_-M3FTKGh5b3"]}
+            ],
+            "cholesterol": [
+                {"name": "20 minutes fatloss home workout", "videos": ["https://youtu.be/FeR-4_Opt-g?si=lFuR5tsnGN_0Eqtr"]},
+                {"name": "Strength training 2 days/week", "videos": ["https://youtu.be/NsIn-z5bOWk?si=hYYOro7TuUfcUxn2"]}
+            ]
+        }
 
-    selected_exercises = exercise_plan.get(category, [])
-    if condition != "none":
-        selected_exercises += condition_exercises.get(condition, [])
+        selected_exercises = exercise_plan.get(category, [])
+        if condition != "none":
+            selected_exercises += condition_exercises.get(condition, [])
 
-    for exercise in selected_exercises:
-        with st.expander(exercise["name"]):
-            for video_url in exercise["videos"]:
-                st.video(video_url)
+        for exercise in selected_exercises:
+            with st.expander(exercise["name"]):
+                for video_url in exercise["videos"]:
+                    st.video(video_url)
 
 # -------------------------------
 # 🤖 AI Chatbot Section
@@ -473,6 +438,6 @@ if user_input:
 
 for chat in st.session_state.chat_history:
     if chat["role"] == "user":
-        st.markdown(f"**You:** {chat['content']}**")
+        st.markdown(f"**You:** {chat['content']}")
     else:
-        st.markdown(f"**Bot:** {chat['content']}**")
+        st.markdown(f"**Bot:** {chat['content']}")
