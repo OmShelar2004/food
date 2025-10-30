@@ -18,8 +18,8 @@ import os
 # -------------------------------
 from tensorflow.keras.models import load_model
 
-MODEL_PATH = "/Users/omshelar/Desktop/food_analyzer/efficientnet-b0_weights_tf_dim_ordering_tf_kernels_autoaugment_notop.h5"
-LABELS_PATH = "labels.txt"
+MODEL_PATH = os.path.join("../models", "efficientnet-b0_weights_tf_dim_ordering_tf_kernels_autoaugment_notop.h5")
+LABELS_PATH = os.path.join("../resources", "labels.txt")
 TARGET_SIZE = (224, 224)
 
 # Load model safely
@@ -30,8 +30,8 @@ from tensorflow.keras.applications import EfficientNetB0
 from tensorflow.keras.models import load_model
 import streamlit as st
 
-MODEL_PATH = "/Users/omshelar/Desktop/food_analyzer/efficientnet-b0_weights_tf_dim_ordering_tf_kernels_autoaugment_notop.h5"
-LABELS_PATH = "labels.txt"
+MODEL_PATH = os.path.join("../models", "efficientnet-b0_weights_tf_dim_ordering_tf_kernels_autoaugment_notop.h5")
+LABELS_PATH = os.path.join("../resources", "labels.txt")
 
 try:
     # Try to load your fine-tuned Food-101 model
@@ -57,7 +57,7 @@ except Exception as e:
 # -------------------------------
 # Load Nutrition Data
 # -------------------------------
-nutrition_df = pd.read_csv("nutrition_data.csv")  # ensure CSV is in same folder
+nutrition_df = pd.read_csv(os.path.join("../data", "nutrition_data.csv"))  # ensure CSV is in the correct folder
 
 
 # -------------------------------
@@ -85,8 +85,8 @@ if search_query:
 from tensorflow.keras.applications.efficientnet import preprocess_input
 
 # Load class names: prefer `classes.txt` (Food-101 style labels), fall back to earlier `labels.txt` if present
-if os.path.exists("classes.txt"):
-    with open("classes.txt", "r", encoding="utf-8") as f:
+if os.path.exists(os.path.join("../resources", "classes.txt")):
+    with open(os.path.join("../resources", "classes.txt"), "r", encoding="utf-8") as f:
         class_names_used = [line.strip() for line in f if line.strip()]
 else:
     # `class_names` was loaded earlier from `labels.txt` (or is an empty list)
