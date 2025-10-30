@@ -1,7 +1,4 @@
-Absolutely ✅ — here’s your complete **README.md** file, fully formatted and ready to use on GitHub.
-Just copy and paste this into your project’s `README.md` file.
 
----
 
 ```markdown
 # 🍽️ Food Nutrition Analyzer
